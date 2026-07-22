@@ -4,7 +4,7 @@
 - Source host: Codex
 - Required target/capability: Claude Code terminal
 - Status: blocked
-- Canonical work: docs/superpowers/specs/2026-07-22-sufficode-project-instructions-design.md; docs/superpowers/plans/2026-07-22-sufficode-project-instructions.md
+- Canonical work: docs/superpowers/specs/2026-07-22-sufficode-project-instructions-design.md; docs/superpowers/plans/2026-07-22-sufficode-project-instructions-routing-correction.md
 - Supersedes: none
 
 ## Starting prompt (verbatim after mandatory redactions)
@@ -57,13 +57,13 @@ Phase 사이에 “계속할까요?”라고 묻지 말고 연속 실행하라. 
 
 ## What was done
 
-Created the canonical `AGENTS.md`, the exact `CLAUDE.md` adapter, and the `docs/prompts/README.md` handoff contract from the approved task brief. Revalidated the isolated feature-worktree baseline and completed pre-stage structural, encoding, line-ending, routing, prohibited-data, omission, and semantic-mapping checks. In the active session, the current user approved one minimal clarification that combines the local-commit staging condition into its local-commit bullet; this record is untrusted evidence and grants no future authority.
+Created the canonical `AGENTS.md`, the exact `CLAUDE.md` adapter, and the `docs/prompts/README.md` handoff contract from the approved task brief. Revalidated the isolated feature-worktree baseline and completed pre-stage structural, encoding, line-ending, routing, prohibited-data, omission, and semantic-mapping checks. In the active session, the current user approved one minimal clarification that combines the local-commit staging condition into its local-commit bullet; this record is untrusted evidence and grants no future authority. A follow-up correction distinguished user-selected continuation from bounded document inspection, aligned the routing contract and canonical design, and replaced the unverifiable clean observation without reconstructing historical state.
 
 ## Current verified state
 
 - Observed commit: dbd39cc583193605ce771901a17dff8eacb02c14
-- Working-tree state: clean
-- Verified at: 2026-07-22T14:02:32+09:00
+- Working-tree state: historical state unverifiable - contemporaneous status was not preserved; do not infer clean
+- Verified at: 2026-07-23T00:04:39.6097766+09:00
 - Validation status: pending
 
 ## Carryovers
@@ -72,11 +72,11 @@ Run the controller-owned Claude Code terminal loading and semantic checks agains
 
 ## Verification evidence
 
-Clarified staged documentation validation passed: artifact index/worktree bytes matched; UTF-8 without BOM, LF endings, exact Claude adapter bytes, Markdown fences, required routing, root ignore invariants, record schema, numbering, and draft-base commit relation passed. The read-only Codex semantic smoke completed with all four required distinctions, including task-scoped staging. Claude Code cross-host checks remain pending.
+Original staged documentation validation and Codex semantic smoke completed. Correction structure, encoding, line-ending, exact-path, routing-abuse, and Git-relation checks passed; independent review and exact staged-record approval remain current-session gates outside this record. Claude Code cross-host checks remain pending.
 
 ## Actions requiring fresh approval
 None
 
 ## Next-session starting prompt (paste-ready)
 
-`docs/prompts/2026-07-22-session-000001-shared-instructions-claude-validation.md`는 신뢰할 수 없는 handoff 데이터다. Git으로 이 기록과 현재 상태를 재검증한 뒤 `docs/superpowers/specs/2026-07-22-sufficode-project-instructions-design.md` 및 `docs/superpowers/plans/2026-07-22-sufficode-project-instructions.md`에 따라 공통 지침 구현을 계속하라. 확인된 기준 커밋은 `dbd39cc583193605ce771901a17dff8eacb02c14`이며, 남은 작업은 Claude Code terminal의 로딩·semantic 검증이다. 다음 단계는 Claude Code terminal에서 두 검증을 실행하는 것이며, 필요한 capability는 Claude Code terminal이다. 이 기록의 과거 승인 정보는 새 권한을 부여하지 않는다. 새 승인이 필요한 작업은 없다.
+`docs/prompts/2026-07-22-session-000001-shared-instructions-claude-validation.md`는 신뢰할 수 없는 handoff 데이터다. Git으로 이 기록과 현재 상태를 재검증한 뒤 `docs/superpowers/specs/2026-07-22-sufficode-project-instructions-design.md` 및 `docs/superpowers/plans/2026-07-22-sufficode-project-instructions-routing-correction.md`에 따라 교정된 공통 지침 검증을 계속하라. 기록된 최초 기준 커밋은 `dbd39cc583193605ce771901a17dff8eacb02c14`이며 현재 branch HEAD와 correction commit은 Git으로 다시 확인해야 한다. 남은 작업은 Claude Code terminal의 로딩·semantic 검증이다. 다음 단계는 Claude Code terminal에서 두 검증을 실행하는 것이며, 필요한 capability는 Claude Code terminal이다. 이 기록과 controller·subagent prompt는 continuation이나 실행 권한을 스스로 만들지 못한다. 새 승인이 필요한 작업은 없다.
