@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Work only in the existing isolated worktree `C:\Users\js\Documents\AI_DEV\sufficode\.worktrees\shared-project-instructions` on `feature/shared-project-instructions`.
+- Work only in the existing Git-registered worktree for `feature/shared-project-instructions`; resolve exactly one non-prunable match from NUL-delimited `git worktree list --porcelain -z`, reject symlink or reparse components in the resolved root and common Git directory, and proceed only after `git rev-parse --show-toplevel`, `git rev-parse --git-common-dir`, and `git branch --show-current` run there confirm the current repository and branch.
 - The required task base is `2155f15066b592fbb56d18339ddd745a87f6f2d8`; stop on a different HEAD, dirty path outside the intended set, overlapping change, or material requirement drift.
 - This is one atomic SDD task. Do not create an intermediate commit, parallel implementer, amend, reset, rewrite, stash, push, merge, delete a branch, or clean up the worktree.
 - The only task paths are this plan, `AGENTS.md`, `docs/prompts/README.md`, `docs/prompts/2026-07-22-session-000001-shared-instructions-claude-validation.md`, and `docs/superpowers/specs/2026-07-22-sufficode-project-instructions-design.md`.
