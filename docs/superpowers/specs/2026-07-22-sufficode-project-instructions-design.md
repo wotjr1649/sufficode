@@ -66,6 +66,7 @@ generator나 자동 validator는 실제 drift가 반복되거나 CI 소비자가
 
 ```text
 sufficode/
+├─ .gitignore
 ├─ AGENTS.md
 ├─ CLAUDE.md
 ├─ docs/
@@ -79,6 +80,8 @@ sufficode/
 
 이 tree는 이 설계가 소유하는 project-process files만 보여 주는 overlay다. Canonical product spec의 shipping product artifact layout을 대체하거나 제품 구조를 다시 정의하지 않는다.
 
+루트 `.gitignore`는 isolated implementation worktree가 저장소 status에 섞이지 않도록 정확히 `/.worktrees/` 한 줄만 추적한다. SDD의 `.superpowers/sdd/` scratch workspace는 선택된 skill의 `sdd-workspace` helper가 내부 `.gitignore`의 `*` 규칙으로 self-ignore하므로 루트 ignore 규칙이나 구현 artifact가 아니다.
+
 초기에는 nested `AGENTS.md`, `AGENTS.override.md`, `.claude/CLAUDE.md`를 만들지 않는다. 더 좁은 규칙이 실제로 필요해질 때 별도 설계 승인을 거친다.
 
 모든 새 text file은 UTF-8 without BOM과 LF를 사용한다.
@@ -88,7 +91,7 @@ sufficode/
 | 대상 | 기준 |
 |---|---|
 | 제품과 release | SemVer `vX.Y.Z` |
-| `AGENTS.md`, `CLAUDE.md` | Git branch, commit, tag |
+| `.gitignore`, `AGENTS.md`, `CLAUDE.md` | Git branch, commit, tag |
 | prompt history | 날짜와 연속 session 번호 |
 | machine-readable prompt schema | parser 또는 generator 도입 시에만 별도 schema version |
 
@@ -311,6 +314,7 @@ Security behavior나 attack surface가 실제로 바뀔 때만 별도 security r
 6. instruction import cycle이 없다.
 7. encoding, line ending, internal link와 conflict check가 성공한다.
 8. `5.1`의 모든 normative concept가 `AGENTS.md`의 명시적인 section 또는 bullet 하나에 대응한다. Shape와 keyword 검사만으로는 통과할 수 없고, 누락·약화·상충이 있으면 semantic drift다.
+9. 루트 `.gitignore`의 raw bytes는 UTF-8 without BOM의 `/.worktrees/`와 단일 LF 하나뿐이며, SDD scratch는 자체 `.superpowers/sdd/.gitignore`로 무시된다.
 
 External URL은 offline에서 Markdown syntax와 expected official domain을 검사한다. Reachability는 현재 사용자가 network check를 허용하고 `9`의 security checkpoint를 통과했을 때만 확인하며, 실행하지 않은 reachability check 자체는 local documentation validation을 막지 않는다.
 
@@ -339,13 +343,17 @@ External URL은 offline에서 Markdown syntax와 expected official domain을 검
 
 Written-spec independent review는 implementer가 아닌 human 또는 agent가 named base에 대한 exact working-tree diff를 현재 사용자 requirements와 승인된 section decisions에 비교하는 절차다. Implementation independent review는 approved written spec을 exact staged diff 또는 exact commit range와 비교한다. 두 review 모두 finding과 `approved | approved with non-blocking notes | changes required` disposition을 기록하며, reviewed bytes가 바뀌면 disposition은 무효다. Unresolved blocking finding이 있거나 finding 수정 뒤 exact diff를 다시 검토하지 않았다면 완료할 수 없다.
 
-Implementation workflow는 `implement → real continuation이면 handoff draft 작성 → intended artifacts를 task-scoped stage → staged-content static and Codex semantic checks → independent review of exact staged diff → real handoff가 있으면 exact staged record blob user review → finding 또는 byte change가 있으면 edit, restage, reverify, and re-review → local commit` 순서다. Untracked record를 review에서 누락하지 않으며 commit 뒤 push는 별도 요청 없이는 수행하지 않는다.
+Subagent-Driven Development로 이 implementation plan을 실행할 때는 exact staged review와 single task-scoped commit을 공유하는 구현·검증·commit 단계 전체를 하나의 atomic SDD task로 취급한다. 하나의 fresh implementer가 intermediate commit 없이 candidate를 만들고, primary controller가 pre-commit independent/security review와 필요한 user record approval을 중개한 뒤 implementer가 단일 commit과 post-commit check를 완료한다. 그 commit range는 별도 task reviewer의 spec-compliance·quality review와 final broad review를 모두 통과해야 한다. Claude Code terminal validation은 controller/user-owned post-task follow-up이며, durable correction이 필요하면 같은 gate를 반복하는 새 atomic SDD task로 처리한다.
+
+SDD 실행은 첫 mutation 전에 `superpowers:using-git-worktrees`로 isolated named-branch worktree를 생성하거나 기존 isolation을 확인해야 한다. 이 구현은 `main` 또는 `master` checkout에서 진행하지 않는다. SDD brief, report, review package와 progress ledger는 `.superpowers/sdd/`의 self-ignored scratch로만 유지하고 task commit에 포함하지 않는다.
+
+Implementation workflow는 `implement → real continuation이면 handoff draft 작성 → intended artifacts를 task-scoped stage → staged-content static and Codex semantic checks → independent review of exact staged diff → real handoff가 있으면 exact staged record blob user review → blocking finding 또는 byte change가 있으면 edit, restage, reverify, and re-review → local commit → exact commit-range task review → final broad review` 순서다. Untracked record를 review에서 누락하지 않으며 commit 뒤 push는 별도 요청 없이는 수행하지 않는다.
 
 ### 11.2 공통 지침 구현의 정적 검증
 
 향후 구현 단계는 최소한 다음을 확인한다.
 
-1. Expected files와 concrete routed paths가 존재한다.
+1. Expected files, exact root `.gitignore`, and concrete routed paths가 존재한다.
 2. `AGENTS.md`가 유일한 common operational source이고 `5.1` semantic mapping에 누락이 없다.
 3. `CLAUDE.md` raw bytes가 `10`의 exact adapter invariant와 같다.
 4. `docs/prompts/README.md`와 실제 record가 승인된 naming, template, redaction과 review contract를 따른다.
@@ -385,7 +393,8 @@ Local commit 후에도 명시적인 요청 없이는 push하지 않는다.
 | AC-08 | Codex evidence | Fresh task semantic smoke가 `6.2`의 expected distinctions를 반환한다. |
 | AC-09 | Claude evidence | 실제 상태를 `pending`, `complete`, `failed`, `blocked` 중 하나로 정확히 기록한다. Candidate commit은 pending 또는 blocked일 수 있지만 failed는 해결 전 final validation을 막는다. |
 | AC-10 | Independent review | Non-implementer가 review 종류에 맞는 exact working-tree diff, staged diff 또는 commit range를 검토하고 blocking finding 없는 disposition을 기록한다. |
-| AC-11 | Git outcome | Task-scoped local commit에 새 unrelated change가 없고 pre-existing unrelated worktree changes가 수정·stage되지 않은 채 그대로 보존되며 push가 수행되지 않는다. |
+| AC-11 | Git outcome | Isolated non-`main`/non-`master` worktree의 task-scoped local commit에 새 unrelated change가 없고 pre-existing unrelated worktree changes가 수정·stage되지 않은 채 그대로 보존되며 push가 수행되지 않는다. |
+| AC-12 | SDD execution | 구현·검증·commit은 하나의 atomic SDD task와 단일 commit으로 완료되고, task review와 final broad review가 blocking finding 없이 끝나며 `.superpowers/sdd/` scratch는 commit에 포함되지 않는다. |
 
 이 문서 작성 단계에서는 운영 파일을 구현하지 않는다. 사용자가 이 written spec을 검토·승인한 뒤 별도의 implementation plan을 작성한다.
 

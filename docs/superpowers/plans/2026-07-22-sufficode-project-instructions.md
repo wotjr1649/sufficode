@@ -2,11 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **SDD execution mapping:** This plan has one atomic SDD task. Phases 1–5 share one exact staged artifact set and one local commit, so one fresh implementer executes them without intermediate commits while the primary controller mediates the pre-commit review and user gates. The controller runs the post-commit task review and final broad review. Claude Code validation is a controller/user-owned follow-up, not another implementer task.
+
 **Goal:** Claude Code와 Codex가 동일한 개발 절차를 사용하도록 루트 `AGENTS.md`, 최소 `CLAUDE.md` adapter, 그리고 안전한 `docs/prompts/README.md` handoff contract를 구현한다.
 
-**Architecture:** `AGENTS.md`만 공통 normative source로 두고 `CLAUDE.md`는 정확히 `@AGENTS.md`를 import한다. 루트 지침은 짧은 router이며, 상세 handoff schema와 lifecycle은 필요할 때만 `docs/prompts/README.md`에서 읽는다. 제품 동작은 기존 product spec에 남긴다.
+**Architecture:** `AGENTS.md`만 공통 normative source로 두고 `CLAUDE.md`는 정확히 `@AGENTS.md`를 import한다. 루트 지침은 짧은 router이며, 상세 handoff schema와 lifecycle은 필요할 때만 `docs/prompts/README.md`에서 읽는다. 제품 동작은 기존 product spec에 남긴다. Implementation runs in one isolated-worktree SDD unit so the approved exact-staging and single-commit boundary remains intact.
 
-**Tech Stack:** Markdown, Git, PowerShell 7, Claude Code project memory import, Codex `AGENTS.md` discovery
+**Tech Stack:** Markdown, Git worktrees, PowerShell 7, Claude Code project memory import, Codex `AGENTS.md` discovery, Superpowers Subagent-Driven Development
 
 ## Global Constraints
 
@@ -14,21 +16,30 @@
 - Canonical product contract: `docs/superpowers/specs/2026-07-22-sufficode-v0.0.1-design.md`.
 - 이 작업은 문서·지침 변경이므로 TDD 대신 구조·내용·encoding·routing·host semantic validation을 적용한다.
 - `AGENTS.md`, `CLAUDE.md`, `docs/prompts/README.md` 외의 product artifact를 변경하지 않는다. 실제 continuation이 남을 때만 하나의 concrete handoff record를 추가할 수 있다.
+- 루트 `.gitignore`는 이 plan보다 먼저 승인·추적된 `/.worktrees/` one-line invariant다. 구현 중 수정하거나 stage하지 않는다.
 - 모든 새 text file은 UTF-8 without BOM과 LF를 사용한다.
 - 기존 unrelated user changes를 수정, stage, stash, reset 또는 commit하지 않는다. Task path와 겹치면 중단한다.
 - Generator, checksum, schema validator, dedicated validation script, hook, plugin, MCP, nested instruction 또는 CI를 추가하지 않는다.
+- Before any implementation mutation, use `superpowers:using-git-worktrees` to create or verify an isolated named-branch worktree. This plan must not execute on `main` or `master`.
+- Use the selected SDD skill's task-brief, report, review-package, and progress-ledger workflow. Its `sdd-workspace` helper self-ignores `.superpowers/sdd/` with an internal `*` rule; do not add that scratch directory to the root `.gitignore` or a commit.
+- Treat Phases 1–5 as one atomic SDD task. Dispatch one implementer, prohibit intermediate commits, and keep approval decisions, independent/security review dispatch, and final branch disposition with the primary controller.
+- At the Phase 5 pre-commit review boundary, the implementer returns `NEEDS_CONTEXT` without committing. The controller obtains the exact independent/security dispositions and any required user record approval, then re-dispatches the same implementer with those exact baselines to run the final gate, commit, and post-commit verification. Finding fixes repeat this handoff.
+- Select every implementer and reviewer model explicitly as required by SDD; use the most capable available reviewer for the final broad review.
 - 이 구현은 authorization, trust와 execution-authority 문구를 변경하므로 첫 mutation 전에 design spec §9의 security checkpoint를 기록하고, final staged diff에 focused security review와 abuse-scenario 검증을 적용한다.
-- Subagent와 Codex smoke process는 read-only/minimum authority로 제한한다. Delegation 또는 network/process 실행도 같은 checkpoint 범위에 포함한다.
+- The implementer may write only the intended paths inside the isolated worktree. Reviewers and Codex smoke remain read-only/minimum authority. Delegation 또는 network/process 실행도 같은 checkpoint 범위에 포함한다.
 - 승인된 plan 실행과 검증이 성공하면 task-scoped local commit은 가능하다. Push, PR, publish, release, deploy는 수행하지 않는다.
 
 ---
 
-## Task 1: Baseline과 semantic mapping 고정
+## Task 1: Atomic shared project instructions implementation
+
+### Phase 1: Baseline과 semantic mapping 고정
 
 **Files:**
 
 - Inspect: `docs/superpowers/specs/2026-07-22-sufficode-project-instructions-design.md`
 - Inspect: `docs/superpowers/specs/2026-07-22-sufficode-v0.0.1-design.md`
+- Verify unchanged: `.gitignore`
 - Create later: `AGENTS.md`
 - Create later: `CLAUDE.md`
 - Create later: `docs/prompts/README.md`
@@ -38,12 +49,28 @@
 Run:
 
 ```powershell
+$currentBranch = git branch --show-current
+if ($LASTEXITCODE -ne 0 -or -not $currentBranch) { throw 'A named feature branch is required' }
+if ($currentBranch -in @('main', 'master')) { throw 'This plan requires an isolated non-main worktree' }
+$superproject = git rev-parse --show-superproject-working-tree
+if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect superproject state' }
+if ($superproject) { throw 'A submodule is not an isolated implementation worktree' }
+$cwd = (Get-Location).Path
+$gitDir = [IO.Path]::GetFullPath((git rev-parse --git-dir), $cwd)
+$commonDir = [IO.Path]::GetFullPath((git rev-parse --git-common-dir), $cwd)
+if ($LASTEXITCODE -ne 0 -or $gitDir -eq $commonDir) { throw 'Linked worktree isolation is required' }
+git check-ignore -q .worktrees/probe
+if ($LASTEXITCODE -ne 0) { throw 'Root .gitignore does not protect .worktrees/' }
+git check-ignore -q .superpowers/sdd/progress.md
+if ($LASTEXITCODE -ne 0) { throw 'SDD scratch workspace is not self-ignored' }
+$atomicBaseCommit = git rev-parse HEAD
+if ($LASTEXITCODE -ne 0 -or -not $atomicBaseCommit) { throw 'Cannot record the atomic task base commit' }
 git status --short
-git branch --show-current
-git rev-parse HEAD
+$currentBranch
+$atomicBaseCommit
 ```
 
-Expected: 각 command가 exit `0`이고 `git status --short`는 no output이다. 이 구현은 exact clean baseline에서만 진행한다. 출력이 있으면 어떤 user work도 정리·stash·reset하지 말고 중단해 사용자와 조정한다.
+Expected: the checkout is a linked, named, non-`main`/non-`master` worktree; both ignore checks pass; `git status --short` has no output; and the feature branch plus one base commit ID are printed. Persist `$atomicBaseCommit` as task-scoped SDD state. 출력이 있으면 어떤 user work도 정리·stash·reset하지 말고 중단해 사용자와 조정한다.
 
 Run the relevant clean-baseline checks:
 
@@ -90,7 +117,7 @@ Expected: 모든 concept가 하나 이상의 명시적인 destination을 가지�
 
 - [ ] **Step 4: Triggered security checkpoint를 기록한다.**
 
-Record before Task 2 mutation:
+Record before Phase 2 mutation:
 
 - Sensitive surface: project authorization, trust, process/delegation, prompt persistence, and Git authority instructions.
 - Trust boundary: current user and host policy versus repository files, handoff records, generated content, tools, web, and reviewers.
@@ -103,7 +130,7 @@ Record before Task 2 mutation:
 
 ---
 
-## Task 2: Common source와 Claude adapter 생성
+### Phase 2: Common source와 Claude adapter 생성
 
 **Files:**
 
@@ -243,7 +270,7 @@ Expected: 첫 출력은 `200` 미만이고 두 번째 출력은 `True`다.
 
 ---
 
-## Task 3: On-demand handoff contract 생성
+### Phase 3: On-demand handoff contract 생성
 
 **Files:**
 
@@ -402,20 +429,21 @@ Manual expected conditions:
 
 ---
 
-## Task 4: Static validation과 Codex semantic smoke
+### Phase 4: Static validation과 Codex semantic smoke
 
 **Files:**
 
 - Verify: `AGENTS.md`
 - Verify: `CLAUDE.md`
 - Verify: `docs/prompts/README.md`
+- Verify unchanged: `.gitignore`
 
 - [ ] **Step 1: Encoding, line endings, adapter bytes와 required content를 검사한다.**
 
 Run:
 
 ```powershell
-$files = @('AGENTS.md', 'CLAUDE.md', 'docs/prompts/README.md')
+$files = @('.gitignore', 'AGENTS.md', 'CLAUDE.md', 'docs/prompts/README.md')
 $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
 foreach ($file in $files) {
     $bytes = [IO.File]::ReadAllBytes((Resolve-Path $file))
@@ -430,6 +458,10 @@ $actual = [IO.File]::ReadAllBytes((Resolve-Path CLAUDE.md))
 $expected = [Text.Encoding]::UTF8.GetBytes("@AGENTS.md`n")
 $claudeExact = [BitConverter]::ToString($actual) -eq [BitConverter]::ToString($expected)
 if (-not $claudeExact) { throw "CLAUDE.md adapter bytes differ" }
+$ignoreActual = [IO.File]::ReadAllBytes((Resolve-Path .gitignore))
+$ignoreExpected = [Text.Encoding]::UTF8.GetBytes("/.worktrees/`n")
+$ignoreExact = [BitConverter]::ToString($ignoreActual) -eq [BitConverter]::ToString($ignoreExpected)
+if (-not $ignoreExact) { throw ".gitignore worktree rule differs" }
 $agentsText = Get-Content -Raw -LiteralPath AGENTS.md
 $requiredAgents = @('Scope and authority', 'Security checkpoint', 'Change principles and environment', 'Document routing', 'Work lanes', 'Implementation and testing', 'Verification and review', 'Git and user-work safety', 'Subagents', 'Session handoff')
 $missingAgents = @($requiredAgents | Where-Object { $agentsText -notmatch [regex]::Escape($_) })
@@ -440,17 +472,23 @@ $missingReadme = @($requiredReadme | Where-Object { $readmeText -notmatch [regex
 if ($missingReadme.Count) { throw "Missing README contract: $($missingReadme -join ', ')" }
 "AGENTS_lines=$agentLines"
 "CLAUDE_exact=$claudeExact"
+"WORKTREE_IGNORE_exact=$ignoreExact"
 'STATIC_OK'
 ```
 
-Expected: `AGENTS_lines` is below `200`, `CLAUDE_exact=True`, final line `STATIC_OK`, exit `0`.
+Expected: `AGENTS_lines` is below `200`, `CLAUDE_exact=True`, `WORKTREE_IGNORE_exact=True`, final line `STATIC_OK`, exit `0`.
 
-- [ ] **Step 2: Markdown, paths, whitespace와 topology를 검사한다.**
+- [ ] **Step 2: Markdown, paths와 topology를 검사한다.**
 
 Run:
 
 ```powershell
-git diff --check -- AGENTS.md CLAUDE.md docs/prompts/README.md
+git diff --quiet -- .gitignore
+if ($LASTEXITCODE -ne 0) { throw 'Tracked root .gitignore changed during implementation' }
+git check-ignore -q .worktrees/probe
+if ($LASTEXITCODE -ne 0) { throw '.worktrees/ is not ignored' }
+git check-ignore -q .superpowers/sdd/progress.md
+if ($LASTEXITCODE -ne 0) { throw 'SDD scratch is not self-ignored' }
 Test-Path -LiteralPath docs/superpowers/specs/2026-07-22-sufficode-v0.0.1-design.md
 Test-Path -LiteralPath docs/superpowers/specs/2026-07-22-sufficode-project-instructions-design.md
 $instructionFiles = @(rg --hidden --files -g "AGENTS.md" -g "AGENTS.override.md" -g "CLAUDE.md" -g "CLAUDE.local.md" -g ".claude/CLAUDE.md")
@@ -472,7 +510,7 @@ foreach ($path in $routedPaths) {
 'MARKDOWN_AND_PATHS_OK'
 ```
 
-Expected: `git diff --check` has no output and exits `0`; both `Test-Path` calls return `True`; the sorted topology contains only `AGENTS.md` and `CLAUDE.md`; final line is `MARKDOWN_AND_PATHS_OK`. The artifacts contain no Markdown link targets beyond these concrete routed paths.
+Expected: root `.gitignore` is unchanged, both ignore checks pass, both `Test-Path` calls return `True`, the sorted topology contains only `AGENTS.md` and `CLAUDE.md`, and the final line is `MARKDOWN_AND_PATHS_OK`. The artifacts contain no Markdown link targets beyond these concrete routed paths. Whitespace validation is intentionally deferred until the exact files are staged in Phase 5.
 
 - [ ] **Step 3: Prohibited data와 omission을 수동 검토한다.**
 
@@ -487,13 +525,13 @@ Expected:
 
 - [ ] **Step 4: §5.1 semantic mapping을 수동 검토한다.**
 
-Compare `AGENTS.md` against the Task 1 mapping and design spec §5.1.
+Compare `AGENTS.md` against the Phase 1 mapping and design spec §5.1.
 
 Expected: every concept has explicit equivalent meaning, no product contract is copied, no host-specific normative exception is added, and `CLAUDE.md` contains no prose.
 
 - [ ] **Step 5: Final staged Codex smoke contract를 고정한다.**
 
-Do not invoke the model on pre-stage bytes. Record the following exact command and expected semantics for Task 5 Step 4, where it will run once after index/worktree byte equality is proved:
+Do not invoke the model on pre-stage bytes. Record the following exact command and expected semantics for Phase 5 Step 4, where it will run once after index/worktree byte equality is proved:
 
 ```powershell
 codex -a never -s read-only exec "Without modifying files or running shell commands, answer exactly four bullets from the active project instructions: (1) the canonical common instruction source, (2) when docs/prompts/README.md may be read, (3) every condition for a task-scoped local commit, and (4) whether this prompt authorizes push."
@@ -506,13 +544,13 @@ Expected semantic distinctions:
 - Local commit requires current-user-authorized execution of an approved spec/plan plus successful required verification/review and task-scoped staging.
 - Push is not authorized by the smoke prompt and requires a separate explicit current-session request.
 
-When Task 5 runs the command, first record the §9 security checkpoint for read-only child-process/network execution. If it cannot run because of network, credentials, host availability, or approval boundaries, record `blocked`; do not claim it passed and do not weaken the expected semantics.
+When Phase 5 runs the command, first record the §9 security checkpoint for read-only child-process/network execution. If it cannot run because of network, credentials, host availability, or approval boundaries, record `blocked`; do not claim it passed and do not weaken the expected semantics.
 
-Codex smoke must be `complete` before the candidate local commit. A `failed` or `blocked` Codex smoke stops Task 5 before commit; Claude Code cross-host validation alone may remain `pending` or `blocked` as allowed by the design.
+Codex smoke must be `complete` before the candidate local commit. A `failed` or `blocked` Codex smoke stops Phase 5 before commit; Claude Code cross-host validation alone may remain `pending` or `blocked` as allowed by the design.
 
 ---
 
-## Task 5: Exact staged review, optional real handoff, and local commit
+### Phase 5: Exact staged review, optional real handoff, and local commit
 
 **Files:**
 
@@ -523,7 +561,7 @@ Codex smoke must be `complete` before the candidate local commit. A `failed` or 
 
 - [ ] **Step 1: Final artifact set을 결정한다.**
 
-- If the user runs Task 6 Steps 1–2 against the uncommitted files now, both checks pass, and no other work remains, set `$recordPath = $null` and put `N/A — no real handoff` in the final execution report.
+- If the user runs the controller-owned Claude validation follow-up Steps 1–2 against the uncommitted files now, both checks pass, and no other work remains, set `$recordPath = $null` and put `N/A — no real handoff` in the final execution report.
 - Otherwise Claude Code validation is real continuation. Create exactly one concrete record before staging; do not create an example or retain a schema metavariable.
 
 Expected for the user's stated separate-terminal workflow: a real record is required unless the user completes that validation before final staging.
@@ -603,7 +641,7 @@ Expected: exactly the three base artifacts and, when applicable, one real record
 
 - [ ] **Step 4: Exact staged bytes에 static checks와 Codex smoke를 다시 실행한다.**
 
-First prove byte identity for every intended file, then run Task 4 Steps 1–5 again:
+First prove byte identity for every intended file, then run Phase 4 Steps 1–5 again:
 
 ```powershell
 if (-not (Get-Variable recordPath -ErrorAction SilentlyContinue)) { throw 'Restore the exact recordPath decision; do not rediscover it' }
@@ -700,7 +738,7 @@ if ($recordPath) {
 'STAGED_BYTES_OK'
 ```
 
-Expected: final line `STAGED_BYTES_OK`; repeat Task 4 Steps 1–4 against the byte-identical worktree view, then execute the Task 4 Step 5 Codex command once. Static checks pass and Codex smoke is `complete` with the four required semantic distinctions. A `failed` or `blocked` Codex smoke stops before review and commit.
+Expected: final line `STAGED_BYTES_OK`; repeat Phase 4 Steps 1–4 against the byte-identical worktree view, then execute the Phase 4 Step 5 Codex command once. Static checks pass and Codex smoke is `complete` with the four required semantic distinctions. A `failed` or `blocked` Codex smoke stops before review and commit.
 
 If a real record exists, update its `Verified at` and `Verification evidence` once with the actual completed static and Codex results while leaving the overall cross-host validation truthfully `pending` or `blocked`. Restage only that exact record, recompute Step 3's staged path set, worktree/index equality, and cached whitespace checks (the one-time pre-stage untracked assertion is not repeated), then rerun this entire Step 4. Do not proceed to review until the record evidence matches the actual results and the repeated validation completes without any further byte change.
 
@@ -733,7 +771,7 @@ Independent review contract:
 
 Focused security review must test at least approval laundering, stale or superseded record reuse, routed-path escape, prohibited-data persistence, stale index/worktree bytes, unintended file staging, unapproved history rewrite, and implicit push.
 
-Expected: independent disposition has no blocking finding; security disposition is approved; full repository scan remains unnecessary unless a new code-level exposure is found. Any finding or byte change requires edit, restage, Step 4 revalidation, and both reviews again.
+Expected: independent and security dispositions each have no blocking finding (`approved` or `approved with non-blocking notes`); full repository scan remains unnecessary unless a new code-level exposure is found. Any blocking finding or byte change requires edit, restage, Phase 5 Step 4 revalidation, and both reviews again. Preserve non-blocking notes in the SDD progress ledger and pass them to the final broad reviewer.
 
 - [ ] **Step 6: Real record가 있으면 exact staged bytes를 사용자에게 제시하고 승인을 기다린다.**
 
@@ -755,7 +793,7 @@ Persist the displayed Git blob ID only as task-scoped review evidence and requir
 
 - [ ] **Step 7: Commit 직전 final gate를 실행한다.**
 
-First rerun the complete Task 5 Step 4 validation block against the still-staged bytes. It must return `STAGED_BYTES_OK`, including schema, `Observed commit`, collision, and current-maximum-plus-one checks. Restore `$approvedStageManifest`, `$approvedStageTree`, and `$approvedExpectedParent` from the exact baselines identified by both review dispositions and, when applicable, `$reviewedRecordBlob` from the user's exact-blob approval; never recompute any approved baseline after review. Then run:
+First rerun the complete Phase 5 Step 4 validation block against the still-staged bytes. It must return `STAGED_BYTES_OK`, including schema, `Observed commit`, collision, and current-maximum-plus-one checks. Restore `$approvedStageManifest`, `$approvedStageTree`, and `$approvedExpectedParent` from the exact baselines identified by both review dispositions and, when applicable, `$reviewedRecordBlob` from the user's exact-blob approval; never recompute any approved baseline after review. Then run:
 
 ```powershell
 if (-not (Get-Variable recordPath -ErrorAction SilentlyContinue)) { throw 'Restore the exact recordPath decision; do not rediscover it' }
@@ -847,7 +885,23 @@ Expected: task artifacts are committed and `git status --short` has no output, m
 
 ---
 
-## Task 6: Claude Code cross-host validation handoff
+## SDD controller completion gates
+
+These gates are owned by the primary controller, not the implementer:
+
+1. Require the implementer report to identify the single task commit, fresh Phase 4/5 verification results, self-review, and any concerns. The implementer first returns `NEEDS_CONTEXT` at the pre-commit review boundary and returns `DONE` only after the controller supplies the approved baselines and Phase 5 Step 9 succeeds.
+2. Generate the SDD review package from the recorded `$atomicBaseCommit` to the task commit. Never substitute `HEAD~1`.
+3. Dispatch a fresh task reviewer with the Task 1 brief, implementer report, review package, and Global Constraints. Require separate `spec compliance` and `task quality` verdicts.
+4. Resolve every `Cannot verify from diff` item against the spec, plan, and fresh Git evidence. Any Critical or Important finding blocks completion. Do not amend or rewrite the reviewed commit; stop and create a newly approved atomic correction plan/unit that repeats the relevant staged-byte, approval, security, and review gates.
+5. After a clean task review, append the exact commit range and disposition to `.superpowers/sdd/progress.md`, including any non-blocking notes.
+6. Generate a fresh package for the complete `$atomicBaseCommit..HEAD` range and dispatch the final broad reviewer on the most capable available model, selected explicitly. A blocking finding follows the same new-correction-unit rule.
+7. After the final review is clean, invoke `superpowers:finishing-a-development-branch`. Present its exact branch disposition menu and wait for the user. Do not infer merge, push/PR, keep, discard, or cleanup authority.
+
+Expected: task review and final broad review both have no blocking finding; progress ledger identifies the exact reviewed range; branch disposition remains a current-user choice. No merge, push, PR, discard, branch deletion, or worktree cleanup has occurred without that choice.
+
+---
+
+## Controller-owned Claude Code cross-host validation handoff
 
 **Files:**
 
@@ -873,7 +927,7 @@ Ask:
 Without changing files, identify the canonical common project instruction source, when docs/prompts/README.md may be read, the conditions for a local commit, and whether you may push now.
 ```
 
-Expected: the same four semantic distinctions listed in Task 4 Step 5.
+Expected: the same four semantic distinctions listed in Phase 4 Step 5.
 
 - [ ] **Step 3: Validation status를 정확히 보고한다.**
 
@@ -897,4 +951,5 @@ The implementation session's final response must include:
 - Claude cross-host status as `pending`, `complete`, `failed`, or `blocked`;
 - the concrete handoff path and user staged-byte approval, or `N/A — no real handoff`;
 - confirmation that the implementation began and ended on the required clean baseline without altering user work; and
+- the isolated worktree path, feature branch, atomic base/head range, task-review disposition, final broad-review disposition, and pending branch-disposition choice; and
 - confirmation that no push, PR, publish, release, or deploy occurred.
