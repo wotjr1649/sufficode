@@ -37,63 +37,244 @@
 
 - [ ] **Step 1: Verify the exact registered-worktree baseline**
 
-Run from the already selected linked worktree:
+Run from a caller-selected trusted checkout of the intended repository. It may be main or a linked checkout only as a discovery anchor; it is never presumed to be the selected mutation target:
+
 
 ```powershell
 $expectedHead = '38a1f37b8defe2d96cbbf32bd898bde19b942426'
-$expectedBranch = 'feature/shared-project-instructions'
-if ((git rev-parse HEAD).Trim() -ne $expectedHead) { throw 'unexpected HEAD' }
-if ((git branch --show-current).Trim() -ne $expectedBranch) { throw 'unexpected branch' }
+$expectedRef = 'refs/heads/feature/shared-project-instructions'
 $newPlan = 'docs/superpowers/plans/2026-07-23-sufficode-project-instructions-worktree-portability-correction.md'
-$status = @(git status --short)
-if ($status.Count -ne 1 -or $status[0] -ne "?? $newPlan") { throw 'unexpected baseline path' }
-if (git rev-parse --show-superproject-working-tree) { throw 'submodule detected' }
-git check-ignore --quiet -- '.superpowers/sdd/task-3-report.md'
-if ($LASTEXITCODE -ne 0) { throw 'task report is not ignored' }
+$pathComparison = if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+    [Runtime.InteropServices.OSPlatform]::Windows
+)) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
 
-$psi = [Diagnostics.ProcessStartInfo]::new('git')
-@('worktree', 'list', '--porcelain', '-z') | ForEach-Object { [void]$psi.ArgumentList.Add($_) }
-$psi.WorkingDirectory = (Get-Location).Path
-$psi.RedirectStandardOutput = $true
-$psi.RedirectStandardError = $true
-$psi.UseShellExecute = $false
-$process = [Diagnostics.Process]::Start($psi)
-$porcelain = $process.StandardOutput.ReadToEnd()
-$null = $process.StandardError.ReadToEnd()
-$process.WaitForExit()
-if ($process.ExitCode -ne 0) { throw 'git worktree list failed' }
-$process.Dispose()
-
-$blocks = @($porcelain -split "`0`0" | Where-Object { $_.Length })
-$matches = @($blocks | Where-Object {
-    $_ -match "(^|`0)branch refs/heads/$([regex]::Escape($expectedBranch))(`0|$)"
-})
-if ($matches.Count -ne 1) { throw 'expected exactly one registered worktree for the branch' }
-if ($matches[0] -match "(^|`0)prunable(?: [^`0]*)?(`0|$)") { throw 'registered worktree is prunable' }
-$entry = @($matches[0] -split "`0" | Where-Object { $_ -like 'worktree *' })
-if ($entry.Count -ne 1) { throw 'invalid worktree registration' }
-$resolvedRoot = (Resolve-Path -LiteralPath $entry[0].Substring(9)).Path
-$currentRoot = (Resolve-Path -LiteralPath (git rev-parse --show-toplevel)).Path
-if ($resolvedRoot -ne $currentRoot) { throw 'registered root mismatch' }
-$resolvedCommon = (Resolve-Path -LiteralPath (git -C $resolvedRoot rev-parse --path-format=absolute --git-common-dir)).Path
-$currentCommon = (Resolve-Path -LiteralPath (git rev-parse --path-format=absolute --git-common-dir)).Path
-if ($resolvedCommon -ne $currentCommon) { throw 'repository mismatch' }
-if ((git -C $resolvedRoot branch --show-current).Trim() -ne $expectedBranch) { throw 'registered branch mismatch' }
-
-function Assert-NoLinkComponent([string]$Path) {
-    $cursor = (Resolve-Path -LiteralPath $Path).Path
-    while ($true) {
-        $item = Get-Item -Force -LiteralPath $cursor
+function Resolve-CurrentFileSystemPath([string]$Path) {
+    $location = Get-Location
+    if (-not [StringComparer]::Ordinal.Equals([string]$location.Provider.Name, 'FileSystem')) {
+        throw 'current PowerShell location is not a FileSystem location'
+    }
+    $base = [string]$location.ProviderPath
+    if (-not [IO.Path]::IsPathFullyQualified($base)) {
+        throw 'current FileSystem location has no fully qualified provider path'
+    }
+    if ([IO.Path]::IsPathRooted($Path) -and -not [IO.Path]::IsPathFullyQualified($Path)) {
+        throw 'rooted path is not fully qualified'
+    }
+    [IO.Path]::GetFullPath($Path, $base)
+}
+function Get-NormalPath([string]$Path) {
+    [IO.Path]::TrimEndingDirectorySeparator((Resolve-CurrentFileSystemPath $Path))
+}
+function Test-PathIdentity([string]$Left, [string]$Right) {
+    [string]::Equals((Get-NormalPath $Left), (Get-NormalPath $Right), $pathComparison)
+}
+function Test-OrdinalIdentity([string]$Left, [string]$Right) {
+    [StringComparer]::Ordinal.Equals($Left, $Right)
+}
+function Resolve-AdministrativeTarget([string]$Base, [string]$Raw) {
+    $value = $Raw.Trim()
+    if ([string]::IsNullOrWhiteSpace($value)) { throw 'empty administrative target' }
+    if ([IO.Path]::IsPathRooted($value)) {
+        if (-not [IO.Path]::IsPathFullyQualified($value)) { throw 'rooted administrative target is not fully qualified' }
+        return Get-NormalPath $value
+    }
+    return Get-NormalPath (Join-Path $Base $value)
+}
+function Assert-NoReparseComponent([string]$Path, [bool]$AllowMissingFinalLeaf = $false) {
+    $full = Get-NormalPath $Path
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrEmpty($root)) { throw 'path has no filesystem root' }
+    $cursor = $root
+    $rootItem = Get-Item -Force -LiteralPath $cursor
+    if (-not $rootItem.PSIsContainer -or
+        ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        -not [string]::IsNullOrEmpty([string]$rootItem.LinkType)) {
+        throw 'filesystem root is not a plain directory'
+    }
+    $tail = $full.Substring($root.Length).Trim([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $components = @($tail -split '[\\/]' | Where-Object { $_.Length })
+    for ($index = 0; $index -lt $components.Count; $index++) {
+        $cursor = Join-Path $cursor $components[$index]
+        try {
+            $item = Get-Item -Force -LiteralPath $cursor -ErrorAction Stop
+        } catch {
+            if ($_.CategoryInfo.Category -eq
+                [Management.Automation.ErrorCategory]::ObjectNotFound -and
+                $AllowMissingFinalLeaf -and
+                $index -eq ($components.Count - 1)) {
+                return
+            }
+            throw
+        }
         $isReparse = [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
-        $isLink = $item.PSObject.Properties.Name -contains 'LinkType' -and [bool]$item.LinkType
-        if ($isReparse -or $isLink) { throw 'registered path contains a link component' }
-        $parent = Split-Path -Parent $cursor
-        if ([string]::IsNullOrEmpty($parent) -or $parent -eq $cursor) { break }
-        $cursor = $parent
+        $isLink = $item.PSObject.Properties.Name -contains 'LinkType' -and -not [string]::IsNullOrEmpty([string]$item.LinkType)
+        if ($isReparse -or $isLink) { throw 'path contains a link or reparse component' }
+        if ($index -lt ($components.Count - 1) -and
+            -not $item.PSIsContainer) {
+            throw 'path has a regular-file intermediate component'
+        }
     }
 }
-Assert-NoLinkComponent $resolvedRoot
-Assert-NoLinkComponent $resolvedCommon
+function Invoke-Git([string]$Root, [string[]]$Arguments) {
+    $psi = [Diagnostics.ProcessStartInfo]::new('git')
+    foreach ($argument in $Arguments) { [void]$psi.ArgumentList.Add($argument) }
+    $psi.WorkingDirectory = $Root
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $process = [Diagnostics.Process]::Start($psi)
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    $exitCode = $process.ExitCode
+    $process.Dispose()
+    if ($exitCode -ne 0) { throw "git failed: $stderr" }
+    $stdout
+}
+function Invoke-GitLines([string]$Root, [string[]]$Arguments) {
+    $output = [string](Invoke-Git $Root $Arguments)
+    $trimmed = $output.TrimEnd([char]13, [char]10)
+    if ($trimmed.Length -eq 0) { return }
+    [regex]::Split($trimmed, '\r?\n')
+}
+
+$callerRoot = Get-NormalPath (Get-Location); Assert-NoReparseComponent $callerRoot; $callerItem = Get-Item -Force -LiteralPath $callerRoot; if (-not $callerItem.PSIsContainer) { throw 'caller root is not a directory' }; $anchorRoot = Get-NormalPath ((Invoke-Git $callerRoot @('rev-parse', '--show-toplevel')).Trim())
+$anchorCommon = Get-NormalPath ((Invoke-Git $callerRoot @('rev-parse', '--path-format=absolute', '--git-common-dir')).Trim())
+$anchorSuperproject = (@(Invoke-Git $callerRoot @('rev-parse', '--show-superproject-working-tree')) -join [string]::Empty).Trim()
+if (-not [string]::IsNullOrEmpty($anchorSuperproject)) { throw 'anchor is a submodule' }
+Assert-NoReparseComponent $anchorRoot
+$anchorRootItem = Get-Item -Force -LiteralPath $anchorRoot
+if (-not $anchorRootItem.PSIsContainer) { throw 'anchor is outside a worktree' }
+Assert-NoReparseComponent $anchorCommon
+$anchorCommonItem = Get-Item -Force -LiteralPath $anchorCommon
+if (-not $anchorCommonItem.PSIsContainer -or
+    ($anchorCommonItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+    -not [string]::IsNullOrEmpty([string]$anchorCommonItem.LinkType)) {
+    throw 'anchor common-dir is not a directory'
+}
+$porcelain = Invoke-Git $anchorRoot @('worktree', 'list', '--porcelain', '-z')
+$registrations = @($porcelain -split "`0`0" | Where-Object { $_.Length })
+$matches = @()
+foreach ($registration in $registrations) {
+    $fields = @($registration -split "`0" | Where-Object { $_.Length })
+    $branchFields = @($fields | Where-Object { $_.StartsWith('branch ', [StringComparison]::Ordinal) })
+    if ($branchFields.Count -eq 1 -and (Test-OrdinalIdentity $branchFields[0].Substring(7) $expectedRef)) { $matches += ,$fields }
+}
+if ($matches.Count -ne 1) { throw 'expected exactly one registered worktree for the ref' }
+$fields = $matches[0]
+if (@($fields | Where-Object { $_.StartsWith('prunable', [StringComparison]::Ordinal) }).Count -ne 0) { throw 'registered worktree is prunable' }
+$rootFields = @($fields | Where-Object { $_.StartsWith('worktree ', [StringComparison]::Ordinal) })
+if ($rootFields.Count -ne 1) { throw 'invalid worktree registration' }
+$selectedRoot = Get-NormalPath $rootFields[0].Substring(9)
+Assert-NoReparseComponent $selectedRoot
+$selectedRootItem = Get-Item -Force -LiteralPath $selectedRoot
+if (-not $selectedRootItem.PSIsContainer) { throw 'selected worktree root is missing' }
+$marker = Join-Path $selectedRoot '.git'
+Assert-NoReparseComponent $marker
+$markerItem = Get-Item -Force -LiteralPath $marker
+if ($markerItem.PSIsContainer -or
+    ($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+    -not [string]::IsNullOrEmpty([string]$markerItem.LinkType)) {
+    throw '.git marker is not a regular file'
+}
+$markerText = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($marker))
+$markerMatch = [regex]::new('\Agitdir: ([^\r\n]+)(?:\r?\n)?\z', [Text.RegularExpressions.RegexOptions]::CultureInvariant).Match($markerText)
+if (-not $markerMatch.Success) { throw 'invalid .git marker' }
+$privateDir = Resolve-AdministrativeTarget $selectedRoot $markerMatch.Groups[1].Value
+Assert-NoReparseComponent $privateDir
+$privateDirItem = Get-Item -Force -LiteralPath $privateDir
+if (-not $privateDirItem.PSIsContainer -or
+    ($privateDirItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+    -not [string]::IsNullOrEmpty([string]$privateDirItem.LinkType)) {
+    throw 'private Git directory is not a directory'
+}
+$selectedCommon = Get-NormalPath ((Invoke-Git $selectedRoot @('rev-parse', '--path-format=absolute', '--git-common-dir')).Trim())
+$absolutePrivate = Get-NormalPath ((Invoke-Git $selectedRoot @('rev-parse', '--path-format=absolute', '--absolute-git-dir')).Trim())
+if (-not (Test-PathIdentity $privateDir $absolutePrivate)) { throw 'marker target differs from Git private directory' }
+if (Test-PathIdentity $privateDir $selectedCommon) { throw 'selected checkout is not linked' }
+if (-not (Test-PathIdentity $selectedCommon $anchorCommon)) { throw 'common Git directory mismatch' }
+if (-not (Test-PathIdentity (Split-Path -Parent $privateDir) (Join-Path $selectedCommon 'worktrees'))) { throw 'private Git directory is not a direct worktrees child' }
+$commonBacklink = Join-Path $privateDir 'commondir'
+$gitdirBacklink = Join-Path $privateDir 'gitdir'
+foreach ($backlink in @($commonBacklink, $gitdirBacklink)) {
+    Assert-NoReparseComponent $backlink
+    $item = Get-Item -Force -LiteralPath $backlink
+    if ($item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        -not [string]::IsNullOrEmpty([string]$item.LinkType)) {
+        throw 'worktree backlink is not a regular file'
+    }
+}
+if (-not (Test-PathIdentity (Resolve-AdministrativeTarget $privateDir ([IO.File]::ReadAllText($commonBacklink))) $selectedCommon)) { throw 'commondir backlink mismatch' }
+if (-not (Test-PathIdentity (Resolve-AdministrativeTarget $privateDir ([IO.File]::ReadAllText($gitdirBacklink))) $marker)) { throw 'gitdir backlink mismatch' }
+function Assert-TargetIdentity {
+    foreach ($path in @($selectedRoot, $anchorCommon, $privateDir, $marker, $commonBacklink, $gitdirBacklink)) { Assert-NoReparseComponent $path }
+    foreach ($directory in @($selectedRoot, $anchorCommon, $privateDir)) {
+        $directoryItem = Get-Item -Force -LiteralPath $directory
+        if (-not $directoryItem.PSIsContainer -or
+            ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            -not [string]::IsNullOrEmpty([string]$directoryItem.LinkType)) {
+            throw 'directory identity changed'
+        }
+    }
+    $markerNow = Join-Path $selectedRoot '.git'
+    $markerItemNow = Get-Item -Force -LiteralPath $markerNow
+    if ($markerItemNow.PSIsContainer -or
+        ($markerItemNow.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        -not [string]::IsNullOrEmpty([string]$markerItemNow.LinkType)) {
+        throw 'marker changed from regular file'
+    }
+    $privateNow = Resolve-AdministrativeTarget $selectedRoot ([regex]::new('\Agitdir: ([^\r\n]+)(?:\r?\n)?\z', [Text.RegularExpressions.RegexOptions]::CultureInvariant).Match([Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($markerNow))).Groups[1].Value)
+    if (-not (Test-PathIdentity $privateNow $privateDir)) { throw 'marker target changed' }
+    foreach ($backlink in @($commonBacklink, $gitdirBacklink)) {
+        Assert-NoReparseComponent $backlink
+        $item = Get-Item -Force -LiteralPath $backlink
+        if ($item.PSIsContainer -or
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            -not [string]::IsNullOrEmpty([string]$item.LinkType)) {
+            throw 'backlink changed from regular file'
+        }
+    }
+    if (-not (Test-PathIdentity (Resolve-AdministrativeTarget $privateDir ([IO.File]::ReadAllText($commonBacklink))) $anchorCommon)) { throw 'commondir backlink changed' }
+    if (-not (Test-PathIdentity (Resolve-AdministrativeTarget $privateDir ([IO.File]::ReadAllText($gitdirBacklink))) $markerNow)) { throw 'gitdir backlink changed' }
+    if (-not (Test-PathIdentity ((Invoke-Git $selectedRoot @('rev-parse', '--show-toplevel')).Trim()) $selectedRoot)) { throw 'selected root mismatch' }
+    $selectedSuperproject = (@(Invoke-Git $selectedRoot @('rev-parse', '--show-superproject-working-tree')) -join [string]::Empty).Trim()
+    if (-not [string]::IsNullOrEmpty($selectedSuperproject)) { throw 'submodule detected' }
+    if (-not (Test-OrdinalIdentity ((Invoke-Git $selectedRoot @('symbolic-ref', '--quiet', 'HEAD')).Trim()) $expectedRef)) { throw 'selected ref mismatch' }
+    if (-not (Test-OrdinalIdentity ((Invoke-Git $selectedRoot @('rev-parse', 'HEAD')).Trim()) $expectedHead)) { throw 'selected HEAD mismatch' }
+    if (-not (Test-PathIdentity ((Invoke-Git $selectedRoot @('rev-parse', '--path-format=absolute', '--git-common-dir')).Trim()) $anchorCommon)) { throw 'selected common-dir mismatch' }
+    if (-not (Test-PathIdentity ((Invoke-Git $selectedRoot @('rev-parse', '--path-format=absolute', '--absolute-git-dir')).Trim()) $privateDir)) { throw 'selected private-dir mismatch' }
+    if (Test-PathIdentity $privateDir $anchorCommon) { throw 'target became main checkout' }
+}
+Assert-TargetIdentity
+Set-Location -LiteralPath $selectedRoot
+Assert-TargetIdentity
+$currentProviderPath = [string](Get-Location).ProviderPath
+if (-not [IO.Path]::IsPathFullyQualified($currentProviderPath)) {
+    throw 'selected PowerShell location has no fully qualified provider path'
+}
+if (Test-PathIdentity $currentProviderPath $anchorCommon) {
+    throw 'regression directory is not distinct from selected worktree location'
+}
+$previousEnvironmentCurrentDirectory = [Environment]::CurrentDirectory
+try {
+    [Environment]::CurrentDirectory = $anchorCommon
+    if (Test-PathIdentity ([Environment]::CurrentDirectory) $currentProviderPath) {
+        throw 'relative-path regression precondition did not differentiate locations'
+    }
+    $relativeProbe = '.superpowers'
+    $expectedProbe = Get-NormalPath (Join-Path $selectedRoot $relativeProbe)
+    if (-not (Test-PathIdentity (Get-NormalPath $relativeProbe) $expectedProbe)) {
+        throw 'relative path did not resolve under the current PowerShell FileSystem location'
+    }
+} finally {
+    [Environment]::CurrentDirectory = $previousEnvironmentCurrentDirectory
+}
+$status = @(Invoke-GitLines $selectedRoot @('status', '--short'))
+if ($status.Count -ne 1 -or -not (Test-OrdinalIdentity $status[0] "?? $newPlan")) { throw 'unexpected baseline path' }
+Assert-NoReparseComponent '.superpowers/sdd/task-3-report.md' $true
+git check-ignore --quiet -- '.superpowers/sdd/task-3-report.md'
+if ($LASTEXITCODE -ne 0) { throw 'task report is not ignored' }
 ```
 
 Expected: exactly one non-prunable registered worktree resolves to the current non-reparse root, repository, branch, and exact base commit. Missing, multiple, stale, or mismatched registration stops mutation.
@@ -113,11 +294,23 @@ Use native patch editing. Do not rewrite or reformat surrounding content.
 Run:
 
 ```powershell
+function Assert-OrdinalArray([object[]]$Left, [object[]]$Right, [string]$Label) {
+    $left = [string[]]@($Left | ForEach-Object { [string]$_ })
+    $right = [string[]]@($Right | ForEach-Object { [string]$_ })
+    [Array]::Sort($left, [StringComparer]::Ordinal)
+    [Array]::Sort($right, [StringComparer]::Ordinal)
+    if ($left.Count -ne $right.Count -or -not [StringComparer]::Ordinal.Equals(($left -join [char]0), ($right -join [char]0))) { throw "$Label mismatch" }
+}
 $oldPlan = 'docs/superpowers/plans/2026-07-22-sufficode-project-instructions-routing-correction.md'
 $newPlan = 'docs/superpowers/plans/2026-07-23-sufficode-project-instructions-worktree-portability-correction.md'
-$expected = @($oldPlan, $newPlan) | Sort-Object
-$changed = @(git status --short | ForEach-Object { $_.Substring(3) }) | Sort-Object
-if (@(Compare-Object $expected $changed).Count -ne 0) { throw 'unexpected path set' }
+$expected = @($oldPlan, $newPlan)
+$changedStatus = @(git status --short)
+if ($LASTEXITCODE -ne 0) { throw 'git status failed' }
+$changed = [string[]]@($changedStatus | ForEach-Object { $_.Substring(3) })
+$expected = [string[]]$expected
+[Array]::Sort($expected, [StringComparer]::Ordinal)
+[Array]::Sort($changed, [StringComparer]::Ordinal)
+if (@(Assert-OrdinalArray $expected $changed 'path set').Count -ne 0) { throw 'unexpected path set' }
 
 $replacement = @(Get-Content -LiteralPath $oldPlan | Where-Object { $_ -like '- Work only in the existing Git-registered worktree for *' })
 if ($replacement.Count -ne 1) { throw 'replacement must occur exactly once' }
@@ -135,12 +328,17 @@ if ($LASTEXITCODE -ne 0) { throw 'unstaged diff check failed' }
 
 git add -- $oldPlan $newPlan
 if ($LASTEXITCODE -ne 0) { throw 'git add failed' }
-$staged = @(git diff --cached --name-only) | Sort-Object
-if (@(Compare-Object $expected $staged).Count -ne 0) { throw 'unexpected staged path set' }
+$staged = [string[]]@(git diff --cached --name-only)
+$expected = [string[]]$expected
+[Array]::Sort($expected, [StringComparer]::Ordinal)
+[Array]::Sort($staged, [StringComparer]::Ordinal)
+if (@(Assert-OrdinalArray $expected $staged 'staged path set').Count -ne 0) { throw 'unexpected staged path set' }
 $status = @(git status --short --untracked-files=all)
-$statusPaths = @($status | ForEach-Object { $_.Substring(3) }) | Sort-Object
-if (@(Compare-Object $expected $statusPaths).Count -ne 0) { throw 'unexpected staged status path set' }
-if (@($status | Where-Object { $_[1] -ne ' ' }).Count -ne 0) { throw 'unstaged bytes remain' }
+if ($LASTEXITCODE -ne 0) { throw 'git status failed' }
+$statusPaths = [string[]]@($status | ForEach-Object { $_.Substring(3) })
+[Array]::Sort($statusPaths, [StringComparer]::Ordinal)
+if (@(Assert-OrdinalArray $expected $statusPaths 'status path set').Count -ne 0) { throw 'unexpected staged status path set' }
+if (@($status | Where-Object { -not [StringComparer]::Ordinal.Equals([string]$_[1], ' ') }).Count -ne 0) { throw 'unstaged bytes remain' }
 git diff --cached --check
 if ($LASTEXITCODE -ne 0) { throw 'staged diff check failed' }
 git diff --quiet
@@ -154,48 +352,8 @@ Expected: parent remains `38a1f37b8defe2d96cbbf32bd898bde19b942426`; exactly two
 
 The controller generates an exact staged package and dispatches independent task-quality and focused-security reviews. They must cover portable branch selection, zero/multiple/prunable fail-closed behavior, root/common-directory/branch verification, prohibited-data absence, exact scope, encoding, and authority preservation. Findings return to the same implementer and restart validation and both reviews.
 
-- [ ] **Step 4: Commit only after both staged reviews are clean**
+- [x] **Step 4: Verify the completed historical commit (read-only)**
 
-After the controller confirms the exact staged tree is unchanged and the user's conditional approval is satisfied, run:
+Task 3 is complete at `ec9f389df6f987f6d5b3871de47690df532c4877`, whose parent is `38a1f37b8defe2d96cbbf32bd898bde19b942426`. Do not replay its commit block, resume from an ignored receipt, or treat historical review evidence as current approval.
 
-```powershell
-if ((git rev-parse HEAD).Trim() -ne '38a1f37b8defe2d96cbbf32bd898bde19b942426') { throw 'parent changed' }
-if ((git branch --show-current).Trim() -ne 'feature/shared-project-instructions') { throw 'branch changed' }
-$expected = @(
-  'docs/superpowers/plans/2026-07-22-sufficode-project-instructions-routing-correction.md',
-  'docs/superpowers/plans/2026-07-23-sufficode-project-instructions-worktree-portability-correction.md'
-) | Sort-Object
-$staged = @(git diff --cached --name-only) | Sort-Object
-if (@(Compare-Object $expected $staged).Count -ne 0) { throw 'staged path set changed' }
-$approvedTreeFile = '.superpowers/sdd/task-3-approved-tree.txt'
-git check-ignore --quiet -- $approvedTreeFile
-if ($LASTEXITCODE -ne 0) { throw 'approved-tree receipt is not ignored' }
-if (-not (Test-Path -LiteralPath $approvedTreeFile -PathType Leaf)) { throw 'approved-tree receipt missing' }
-$approvedTreeItem = Get-Item -Force -LiteralPath $approvedTreeFile
-if ($approvedTreeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'approved-tree receipt is a reparse point' }
-$approvedTree = (Get-Content -Raw -LiteralPath $approvedTreeFile).Trim()
-if ($approvedTree -notmatch '^[0-9a-f]{40}$') { throw 'invalid approved-tree receipt' }
-if ((git write-tree).Trim() -ne $approvedTree) { throw 'staged tree differs from reviewed tree' }
-git diff --cached --check
-if ($LASTEXITCODE -ne 0) { throw 'staged diff check failed' }
-git diff --quiet
-if ($LASTEXITCODE -ne 0) { throw 'worktree and index differ' }
-git commit -m 'docs: make worktree routing portable'
-if ($LASTEXITCODE -ne 0) { throw 'git commit failed' }
-
-$newHead = (git rev-parse HEAD).Trim()
-if ((git rev-parse "$newHead^").Trim() -ne '38a1f37b8defe2d96cbbf32bd898bde19b942426') { throw 'unexpected parent' }
-$expected = @(
-  'docs/superpowers/plans/2026-07-22-sufficode-project-instructions-routing-correction.md',
-  'docs/superpowers/plans/2026-07-23-sufficode-project-instructions-worktree-portability-correction.md'
-) | Sort-Object
-$actual = @(git diff-tree --no-commit-id --name-only -r $newHead) | Sort-Object
-if (@(Compare-Object $expected $actual).Count -ne 0) { throw 'unexpected committed path set' }
-if (@(git status --short).Count -ne 0) { throw 'tracked worktree is not clean' }
-git diff-tree --check "$newHead^" $newHead
-if ($LASTEXITCODE -ne 0) { throw 'commit diff check failed' }
-```
-
-Expected: one local commit with the exact parent and two paths, clean tracked state, and no remote action.
-
-The controller then obtains separate post-commit spec-compliance and task-quality verdicts for `38a1f37b8defe2d96cbbf32bd898bde19b942426..<newHead>`, records the exact disposition in the ignored ledger, and uses the strongest available model for a final review of the full branch range from its merge base. A post-commit Critical or Important finding requires another correction unit; never amend, reset, or rewrite.
+Read-only verification may confirm the exact parent, subject `docs: make worktree routing portable`, and the two historical changed paths. Any later correction is a new unit governed by the current user's request and `docs/superpowers/plans/2026-07-23-sufficode-project-instructions-final-review-correction.md`; it must revalidate the registered linked-worktree administrative chain and exact staged identity before a separately approved commit.

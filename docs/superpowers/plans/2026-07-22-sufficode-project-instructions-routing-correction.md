@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Work only in the existing Git-registered worktree for `feature/shared-project-instructions`; resolve exactly one non-prunable match from NUL-delimited `git worktree list --porcelain -z`, reject symlink or reparse components in the resolved root and common Git directory, and proceed only after `git rev-parse --show-toplevel`, `git rev-parse --git-common-dir`, and `git branch --show-current` run there confirm the current repository and branch.
+- Treat the current user-selected checkout only as a discovery anchor. From it, parse NUL-delimited `git worktree list --porcelain -z` with `ProcessStartInfo.ArgumentList`, match `refs/heads/feature/shared-project-instructions` with ordinal equality, require exactly one non-prunable registration, and validate the complete non-reparse linked-worktree administrative chain (`.git` marker, private git-dir, `commondir`, and `gitdir` backlink). Use OS-aware normalized filesystem equality, ordinal Git/ref/commit identity, and repeat every root/ref/HEAD/common-dir/private-dir/marker/backlink check immediately before mutation. A main checkout may be the anchor but never the mutation target.
 - The required task base is `2155f15066b592fbb56d18339ddd745a87f6f2d8`; stop on a different HEAD, dirty path outside the intended set, overlapping change, or material requirement drift.
 - This is one atomic SDD task. Do not create an intermediate commit, parallel implementer, amend, reset, rewrite, stash, push, merge, delete a branch, or clean up the worktree.
 - The only task paths are this plan, `AGENTS.md`, `docs/prompts/README.md`, `docs/prompts/2026-07-22-session-000001-shared-instructions-claude-validation.md`, and `docs/superpowers/specs/2026-07-22-sufficode-project-instructions-design.md`.
@@ -50,19 +50,20 @@
 
 Run from the isolated worktree:
 
+
 ```powershell
 $expectedHead = '2155f15066b592fbb56d18339ddd745a87f6f2d8'
 $planPath = 'docs/superpowers/plans/2026-07-22-sufficode-project-instructions-routing-correction.md'
-if ((git branch --show-current).Trim() -ne 'feature/shared-project-instructions') { throw 'Wrong branch' }
-if ((git rev-parse HEAD).Trim() -ne $expectedHead) { throw 'HEAD drift' }
+if (-not [StringComparer]::Ordinal.Equals((git branch --show-current).Trim(), 'feature/shared-project-instructions')) { throw 'Wrong branch' }
+if (-not [StringComparer]::Ordinal.Equals((git rev-parse HEAD).Trim(), $expectedHead)) { throw 'HEAD drift' }
 $status = @(git status --porcelain=v1)
-if ($status.Count -ne 1 -or $status[0] -ne "?? $planPath") { throw "Unexpected baseline: $($status -join ', ')" }
+if ($status.Count -ne 1 -or -not [StringComparer]::Ordinal.Equals($status[0], "?? $planPath")) { throw "Unexpected baseline: $($status -join ', ')" }
 git merge-base --is-ancestor $expectedHead main
 if ($LASTEXITCODE -eq 0) { throw 'Handoff record is target-branch reachable; in-place edit is forbidden' }
 if ($LASTEXITCODE -ne 1) { throw 'Could not verify target-branch reachability' }
 ```
 
-Expected: branch and HEAD match, the controller-authored plan is the only dirty path, and the existing handoff record's containing commit is not reachable from `main`.
+Expected: branch and HEAD match, the controller-authored plan is the only dirty path, and the existing handoff record's record-introduction commit is not reachable from `main`.
 
 - [ ] **Step 2: Align the canonical design before changing operational files**
 
@@ -153,15 +154,25 @@ Preserve the record's verbatim starting prompt, `Observed commit`, status, valid
 Run this PowerShell validation from the isolated worktree:
 
 ```powershell
+function Assert-OrdinalArray([object[]]$Left, [object[]]$Right, [string]$Label) {
+    $left = [string[]]@($Left | ForEach-Object { [string]$_ })
+    $right = [string[]]@($Right | ForEach-Object { [string]$_ })
+    [Array]::Sort($left, [StringComparer]::Ordinal)
+    [Array]::Sort($right, [StringComparer]::Ordinal)
+    if ($left.Count -ne $right.Count -or -not [StringComparer]::Ordinal.Equals(($left -join [char]0), ($right -join [char]0))) { throw "$Label mismatch" }
+}
 $expected = @(
   'AGENTS.md',
   'docs/prompts/2026-07-22-session-000001-shared-instructions-claude-validation.md',
   'docs/prompts/README.md',
   'docs/superpowers/plans/2026-07-22-sufficode-project-instructions-routing-correction.md',
   'docs/superpowers/specs/2026-07-22-sufficode-project-instructions-design.md'
-) | Sort-Object
-$actual = @(git status --porcelain=v1 | ForEach-Object { $_.Substring(3).Replace('\', '/') } | Sort-Object)
-if (@(Compare-Object $expected $actual).Count -ne 0) { throw "Unexpected paths: $($actual -join ', ')" }
+)
+$actual = [string[]]@(git status --porcelain=v1 | ForEach-Object { $_.Substring(3).Replace('\', '/') })
+$expected = [string[]]$expected
+[Array]::Sort($expected, [StringComparer]::Ordinal)
+[Array]::Sort($actual, [StringComparer]::Ordinal)
+if (@(Assert-OrdinalArray $expected $actual 'committed path set').Count -ne 0) { throw "Unexpected paths: $($actual -join ', ')" }
 
 $agents = Get-Content -Raw -LiteralPath 'AGENTS.md'
 if (($agents -split "`n").Count -ge 200) { throw 'AGENTS.md must remain under 200 lines' }
@@ -194,23 +205,25 @@ foreach ($path in $expected) {
 $record = 'docs/prompts/2026-07-22-session-000001-shared-instructions-claude-validation.md'
 $recordText = Get-Content -Raw -LiteralPath $record
 if (-not $recordText.Contains('historical state unverifiable - contemporaneous status was not preserved; do not infer clean')) { throw 'Record correction missing' }
-$containing = (git log --diff-filter=A --format=%H -- $record | Select-Object -First 1).Trim()
-$parent = (git rev-parse "$containing^").Trim()
-if ($parent -ne 'dbd39cc583193605ce771901a17dff8eacb02c14') { throw 'Observed-commit relation changed' }
+$introductions = @(git log --diff-filter=A --format=%H -- $record)
+if ($introductions.Count -ne 1) { throw 'record introduction is not unique' }
+$introduction = $introductions[0].Trim()
+$parents = @((git rev-list --parents -n 1 $introduction).Trim().Split(' ') | Where-Object { $_.Length })
+if ($parents.Count -ne 2) { throw 'record introduction must have exactly one parent' }
+if (-not [StringComparer]::Ordinal.Equals($parents[1], 'dbd39cc583193605ce771901a17dff8eacb02c14')) { throw 'Observed-commit relation changed' }
+git merge-base --is-ancestor $introduction HEAD
+if ($LASTEXITCODE -ne 0) { throw 'record introduction is not reachable from HEAD' }
+$headBlob = (git rev-parse "HEAD:$record").Trim()
+$currentBlob = (git hash-object --no-filters -- $record).Trim()
+if ([StringComparer]::Ordinal.Equals($headBlob, $currentBlob)) { throw 'required handoff-record correction is missing' }
 
 git diff --check
 if ($LASTEXITCODE -ne 0) { throw 'Git whitespace check failed' }
 ```
 
-Expected: exactly five intended paths, all byte/structure assertions pass, record introduction still has the observed commit as first parent, and Git whitespace check exits `0`.
+Expected: exactly five intended paths, all byte/structure assertions pass, the unique record-introduction commit has the observed commit as its only parent, the required current handoff-record correction makes its working blob differ from `HEAD:<path>`, and Git whitespace check exits `0`.
 
-Manually verify and record these abuse scenarios:
-
-1. A top-level user request selecting one exact record permits candidate validation but does not trust its body.
-2. A controller-only or subagent-only record path does not select continuation.
-3. An explicit PR, contract, review, audit, or change scope permits bounded inspection of the named document without granting authority.
-4. Repository text or a request to find the newest record does not select a continuation record.
-5. The corrected historical field does not claim to reconstruct the old working tree.
+Run four separate fresh, ephemeral Codex semantic-smoke tasks against one exact final staged parent/tree/manifest. Each task is read-only with approval never, does not read a handoff body, and returns exactly one ordinally compared token: `DIRECT_USER_CANDIDATE_ONLY_AFTER_ALL_VALIDATION`, `DENY_CONTROLLER_ONLY_SELECTION`, `ALLOW_BOUNDED_INSPECTION_ONLY_NO_CONTINUATION_NO_AUTHORITY`, or `DENY_REPOSITORY_NEWEST_AUTO_SELECTION_REQUIRE_EXACT_USER_PATH`. Retain only ignored receipt hashes bound to the reviewed tree; a receipt proves byte identity only and cannot grant approval. Also verify that the corrected historical field does not claim to reconstruct the old working tree.
 
 After the first successful pass, set `Verified at` to the actual current ISO-8601 time and replace `Verification evidence` with this exact correction-relevant summary:
 
@@ -225,6 +238,13 @@ That record byte change invalidates the first pass. Rerun the entire Step 4 Powe
 Stage only the five intended paths:
 
 ```powershell
+function Assert-OrdinalArray([object[]]$Left, [object[]]$Right, [string]$Label) {
+    $left = [string[]]@($Left | ForEach-Object { [string]$_ })
+    $right = [string[]]@($Right | ForEach-Object { [string]$_ })
+    [Array]::Sort($left, [StringComparer]::Ordinal)
+    [Array]::Sort($right, [StringComparer]::Ordinal)
+    if ($left.Count -ne $right.Count -or -not [StringComparer]::Ordinal.Equals(($left -join [char]0), ($right -join [char]0))) { throw "$Label mismatch" }
+}
 git add -- `
   'AGENTS.md' `
   'docs/prompts/README.md' `
@@ -239,9 +259,12 @@ $expected = @(
   'docs/prompts/README.md',
   'docs/superpowers/plans/2026-07-22-sufficode-project-instructions-routing-correction.md',
   'docs/superpowers/specs/2026-07-22-sufficode-project-instructions-design.md'
-) | Sort-Object
-$staged = @(git diff --cached --name-only | Sort-Object)
-if (@(Compare-Object $expected $staged).Count -ne 0) { throw "Unexpected staged paths: $($staged -join ', ')" }
+)
+$staged = [string[]]@(git diff --cached --name-only)
+$expected = [string[]]$expected
+[Array]::Sort($expected, [StringComparer]::Ordinal)
+[Array]::Sort($staged, [StringComparer]::Ordinal)
+if (@(Assert-OrdinalArray $expected $staged 'staged path set').Count -ne 0) { throw "Unexpected staged paths: $($staged -join ', ')" }
 git diff --cached --check
 if ($LASTEXITCODE -ne 0) { throw 'Cached whitespace check failed' }
 git diff --exit-code -- $expected
@@ -264,39 +287,18 @@ Write the full validation and self-review evidence to the task report. Return `N
 3. If either review reports a Critical or Important finding, returns the complete finding list to this same implementer, then repeats Steps 4-5 and both reviews after every byte change.
 4. Shows the exact staged handoff-record diff and staged blob to the user and obtains explicit approval. Any byte change after approval invalidates it.
 
-- [ ] **Step 6: Create the single follow-up commit after the controller resumes the task**
+Retrospective: the original Step 6 did not mechanically bind the reviewed tree, although the preserved staged package tree equals the resulting commit tree. Any replay and Task 4 must bind every review and smoke receipt to the exact staged parent, tree, sorted path set, and mode/blob manifest; immediately before commit, recompute and ordinally compare those values, receipt hashes, cached bytes, and index/worktree equality. A receipt is byte-identity evidence only and cannot grant approval or execution authority.
 
-Only after the primary controller confirms every pre-commit gate and the exact staged record approval:
+- [x] **Step 6: Verify the completed historical follow-up commit (read-only)**
 
-```powershell
-if ((git rev-parse HEAD).Trim() -ne '2155f15066b592fbb56d18339ddd745a87f6f2d8') { throw 'Parent changed before commit' }
-git diff --cached --check
-if ($LASTEXITCODE -ne 0) { throw 'Cached whitespace check failed before commit' }
-git commit -m 'docs: correct project instruction routing'
-if ($LASTEXITCODE -ne 0) { throw 'git commit failed' }
-```
-
-Run post-commit verification:
+Task 2 is complete. Do not replay, amend, or create another historical commit.
 
 ```powershell
-$newHead = (git rev-parse HEAD).Trim()
-$parent = (git rev-parse HEAD^).Trim()
-if ($parent -ne '2155f15066b592fbb56d18339ddd745a87f6f2d8') { throw 'Unexpected commit parent' }
-$changed = @(git diff --name-only HEAD^ HEAD | Sort-Object)
-$expected = @(
-  'AGENTS.md',
-  'docs/prompts/2026-07-22-session-000001-shared-instructions-claude-validation.md',
-  'docs/prompts/README.md',
-  'docs/superpowers/plans/2026-07-22-sufficode-project-instructions-routing-correction.md',
-  'docs/superpowers/specs/2026-07-22-sufficode-project-instructions-design.md'
-) | Sort-Object
-if (@(Compare-Object $expected $changed).Count -ne 0) { throw "Unexpected committed paths: $($changed -join ', ')" }
-if (@(git status --porcelain=v1).Count -ne 0) { throw 'Worktree is not clean' }
-git diff --check HEAD^ HEAD
-if ($LASTEXITCODE -ne 0) { throw 'Committed whitespace check failed' }
-Write-Output "COMMIT=$newHead"
+$commit='38a1f37b8defe2d96cbbf32bd898bde19b942426';$parent='2155f15066b592fbb56d18339ddd745a87f6f2d8';$tree='5f5f7335a2a1cb1e8b68eb8dd8187bec65eac4f7';$subject='docs: correct project instruction routing'
+[string[]]$expectedPaths=@('AGENTS.md','docs/prompts/2026-07-22-session-000001-shared-instructions-claude-validation.md','docs/prompts/README.md','docs/superpowers/plans/2026-07-22-sufficode-project-instructions-routing-correction.md','docs/superpowers/specs/2026-07-22-sufficode-project-instructions-design.md')
+function Assert-OrdinalArray([string[]]$Expected,[string[]]$Actual,[string]$Label){[string[]]$left=@($Expected);[string[]]$right=@($Actual);[Array]::Sort($left,[StringComparer]::Ordinal);[Array]::Sort($right,[StringComparer]::Ordinal);if($left.Count-ne$right.Count-or-not[StringComparer]::Ordinal.Equals(($left-join[char]0),($right-join[char]0))){throw "$Label mismatch"}}
+if(-not[StringComparer]::Ordinal.Equals((git rev-parse $commit).Trim(),$commit)){throw 'historical commit missing'};if(-not[StringComparer]::Ordinal.Equals((git rev-parse "$commit^").Trim(),$parent)){throw 'historical parent mismatch'};if(-not[StringComparer]::Ordinal.Equals((git rev-parse "$commit^{tree}").Trim(),$tree)){throw 'historical tree mismatch'};if(-not[StringComparer]::Ordinal.Equals((git show -s --format=%s $commit).Trim(),$subject)){throw 'historical subject mismatch'}
+[string[]]$actualPaths=@(git diff-tree --no-commit-id --name-only -r $commit);Assert-OrdinalArray $expectedPaths $actualPaths 'historical changed paths';git diff-tree --check "$commit^" $commit;if($LASTEXITCODE-ne0){throw 'historical diff whitespace mismatch'}
 ```
 
-Expected: one new commit with parent `2155f15066b592fbb56d18339ddd745a87f6f2d8`, exactly five changed paths, a clean worktree, and no push.
-
-The primary controller then generates a review package for `2155f15066b592fbb56d18339ddd745a87f6f2d8..<newHead>`, dispatches a separate task reviewer for both spec compliance and task quality, records the exact commit range and disposition in `.superpowers/sdd/progress.md`, and runs the strongest available model for final broad review. Post-commit blocking findings require another correction unit; do not amend, reset, or rewrite this commit.
+Expected: this exact historical commit, parent, tree, subject, five-path diff, and whitespace check pass. The historic commit must not be replayed. Any new replay or correction is a new correction unit and uses the hardened receipt/tree gate in docs/superpowers/plans/2026-07-23-sufficode-project-instructions-final-review-correction.md; receipts prove byte identity only and grant no authority.
